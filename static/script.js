@@ -11,22 +11,20 @@ let STATE = {
 let rtc_configuration = {iceServers: [
                                       {urls: "stun:stun.l.google.com:19302"}]};
 
-function IncomingMessage(command, sender, sdp_type, sdp, ice_candidate_index, ice_candidate) {
+function IncomingMessage(command, sender, description, ice_candidate_index, ice_candidate) {
   this.command = command;
   this.sender = sender;
-  this.sdp_type = sdp_type;
-  this.sdp = sdp;
-  this.ice_candidate_index = ice_candidate_index;
-  this.ice_candidate = ice_candidate;
+  this.description = description;
+  this.index = ice_candidate_index;
+  this.candidate = ice_candidate;
 }
 
-function OutgoingMessage(command, recipient, sdp_type, sdp, ice_candidate_index, ice_candidate) {
+function OutgoingMessage(command, recipient, description, ice_candidate_index, ice_candidate) {
   this.command = command;
   this.recipient = recipient;
-  this.sdp_type = sdp_type;
-  this.sdp = sdp;
-  this.ice_candidate_index = ice_candidate_index;
-  this.ice_candidate = ice_candidate;
+  this.description = description;
+  this.index = ice_candidate_index;
+  this.candidate = ice_candidate;
 }
 
 function sendMessage(message) {
@@ -70,16 +68,14 @@ function addCamera(identifier) {
       "ice_candidate",
       identifier,
       "",
-      "",
       event.candidate.sdpMLineIndex,
       event.candidate.candidate
     ));
     console.log("ICE Candidate sent");
   };
   sendMessage(new OutgoingMessage(
-    "call",
+    "call_init",
     identifier,
-    "",
     "",
     0,
     ""
@@ -98,8 +94,7 @@ function subscribe(uri) {
       console.log(`connected to event stream at ${uri}`);
       retryTime = 1;
       sendMessage(new OutgoingMessage(
-        "list_cameras",
-        "",
+        "camera_ping",
         "",
         "",
         0,
@@ -117,13 +112,12 @@ function subscribe(uri) {
       } else if (message.command == "sdp_offer") {
         console.log("New incoming SDP message")
 
-        STATE.cameras[message.sender].connection.setRemoteDescription({ type: message.sdp_type, sdp: message.sdp}).then(() => {
+        STATE.cameras[message.sender].connection.setRemoteDescription({ type: "offer", sdp: message.description}).then(() => {
           STATE.cameras[message.sender].connection.createAnswer().then((desc) => {
             STATE.cameras[message.sender].connection.setLocalDescription(desc).then(function() {
               sendMessage(new OutgoingMessage(
                 "sdp_answer",
                 message.sender,
-                desc.type,
                 desc.sdp,
                 0,
                 ""
