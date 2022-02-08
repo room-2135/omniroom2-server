@@ -11,31 +11,6 @@ let STATE = {
 let rtc_configuration = {iceServers: [
                                       {urls: "stun:stun.l.google.com:19302"}]};
 
-function IncomingMessage(command, sender, description, ice_candidate_index, ice_candidate) {
-  this.command = command;
-  this.sender = sender;
-  this.description = description;
-  this.index = ice_candidate_index;
-  this.candidate = ice_candidate;
-}
-
-function OutgoingMessage(command, recipient, description, ice_candidate_index, ice_candidate) {
-  this.command = command;
-  this.recipient = recipient;
-  this.description = description;
-  this.index = ice_candidate_index;
-  this.candidate = ice_candidate;
-}
-
-function sendMessage(message) {
-  fetch("/message", {
-    method: "POST",
-    body: JSON.stringify(message),
-  }).then((response) => {
-    if (response.ok) console.log("Message sent");
-  });
-}
-
 function addCamera(identifier) {
   let videoElement = getVideoElement(identifier);
   if (videoElement == null) {
@@ -64,91 +39,15 @@ function addCamera(identifier) {
       return;
     }
     console.log(event.candidate);
-    sendMessage(new OutgoingMessage(
-      "ice_candidate",
+    sendICECandidate(
       identifier,
-      "",
       event.candidate.sdpMLineIndex,
       event.candidate.candidate
-    ));
+    );
     console.log("ICE Candidate sent");
   };
-  sendMessage(new OutgoingMessage(
-    "call_init",
-    identifier,
-    "",
-    0,
-    ""
-  ));
+  sendCallInit(identifier);
   return true;
-}
-
-function subscribe(uri) {
-  var retryTime = 1;
-
-  function connect(uri) {
-    const events = new EventSource(uri);
-
-    events.addEventListener("open", () => {
-      setConnectedStatus(true);
-      console.log(`connected to event stream at ${uri}`);
-      retryTime = 1;
-      sendMessage(new OutgoingMessage(
-        "camera_ping",
-        "",
-        "",
-        0,
-        ""
-      ));
-
-    });
-
-    events.addEventListener("message", (ev) => {
-      console.log(STATE);
-      const message = JSON.parse(ev.data);
-      console.log("incoming message: ", message);
-      if (message.command == "camera_ping") {
-        addCamera(message.sender);
-      } else if (message.command == "sdp_offer") {
-        console.log("New incoming SDP message")
-
-        STATE.cameras[message.sender].connection.setRemoteDescription({ type: "offer", sdp: message.description}).then(() => {
-          STATE.cameras[message.sender].connection.createAnswer().then((desc) => {
-            STATE.cameras[message.sender].connection.setLocalDescription(desc).then(function() {
-              sendMessage(new OutgoingMessage(
-                "sdp_answer",
-                message.sender,
-                desc.sdp,
-                0,
-                ""
-              ));
-              console.log("SDP Answer sent");
-            });
-          });
-        });
-      } else if (message.command == "ice_candidate") {
-        console.log("New incoming ICE Candidate")
-        STATE.cameras[message.sender].connection.addIceCandidate(new RTCIceCandidate({
-          "candidate": message.ice_candidate.candidate,
-          "sdpMLineIndex": (message.ice_candidate.index & 0xFFFF),
-        })).catch((err) => {console.log(err);});
-      } else {
-        console.log("Unknown command: ", message);
-      }
-    });
-
-    events.addEventListener("error", () => {
-      setConnectedStatus(false);
-      events.close();
-
-      let timeout = retryTime;
-      retryTime = Math.min(64, retryTime * 2);
-      console.log(`connection lost. attempting to reconnect in ${timeout}s`);
-      setTimeout(() => connect(uri), (() => timeout * 1000)());
-    });
-  }
-
-  connect(uri);
 }
 
 function setConnectedStatus(status) {
@@ -161,7 +60,35 @@ function getVideoElement(identifier) {
 }
 
 function init() {
-  subscribe("/events");
+  subscribe("/events", () => {
+    setConnectedStatus(true);
+    console.log("connected to event stream");
+    sendCameraDiscovery();
+  }, (message) => {
+    addCamera(message.sender);
+  }, (message) => {
+    console.log("New incoming SDP message")
+
+    STATE.cameras[message.sender].connection.setRemoteDescription({ type: "offer", sdp: message.description}).then(() => {
+      STATE.cameras[message.sender].connection.createAnswer().then((desc) => {
+        STATE.cameras[message.sender].connection.setLocalDescription(desc).then(function() {
+          sendSDPAnswer(
+            message.sender,
+            desc.sdp
+          );
+          console.log("SDP Answer sent");
+        });
+      });
+    });
+  }, (message) => {
+    console.log("New incoming ICE Candidate")
+    STATE.cameras[message.sender].connection.addIceCandidate(new RTCIceCandidate({
+      "candidate": message.candidate,
+      "sdpMLineIndex": (message.index & 0xFFFF),
+    })).catch((err) => {console.log(err);});
+  }, () => {
+      setConnectedStatus(false);
+  });
 }
 
 init();

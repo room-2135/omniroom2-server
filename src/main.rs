@@ -19,6 +19,11 @@ struct GenericIncomingMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]
+struct CameraDiscoveryIncomingMessage {
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
 struct CameraPingIncomingMessage {
     pub recipient: String,
 }
@@ -63,7 +68,7 @@ struct Message {
     #[field(validate = len(..20))]
     pub command: String,
     pub sender: String,
-    pub recipient: String,
+    pub recipient: Option<String>,
     pub description: Option<String>,
     pub index: Option<u32>,
     pub candidate: Option<String>,
@@ -93,7 +98,10 @@ async fn events(queue: &State<Sender<Message>>, mut end: Shutdown, user: User) -
                 },
                 _ = &mut end => break,
             };
-            if msg.recipient != msg.sender && ((msg.recipient == user.user_id || msg.command == "camera_ping") && msg.sender != user.user_id) {
+
+            let sender = Some(msg.sender.clone());
+            let user_id = Some(user.user_id.clone());
+            if msg.recipient != sender && ((msg.recipient == user_id || msg.command == "camera_discovery") && msg.sender != user.user_id) {
                 yield Event::json(&OutgoingMessage {
                     command: msg.command,
                     sender: msg.sender,
@@ -106,13 +114,25 @@ async fn events(queue: &State<Sender<Message>>, mut end: Shutdown, user: User) -
     }
 }
 
+#[post("/message/camera_discovery")]
+fn camera_discovery(queue: &State<Sender<Message>>, user: User) {
+    let _res = queue.send(Message {
+        command: "camera_discovery".to_string(),
+        sender: user.user_id,
+        recipient: None,
+        description: None,
+        index: None,
+        candidate: None
+    });
+}
+
 #[post("/message/camera_ping", data = "<message>")]
 fn camera_ping(message: Json<CameraPingIncomingMessage>, queue: &State<Sender<Message>>, user: User) {
     let incoming_message = message.into_inner();
     let _res = queue.send(Message {
         command: "camera_ping".to_string(),
         sender: user.user_id,
-        recipient: incoming_message.recipient,
+        recipient: Some(incoming_message.recipient),
         description: None,
         index: None,
         candidate: None
@@ -125,7 +145,7 @@ fn call_init(message: Json<GenericIncomingMessage>, queue: &State<Sender<Message
     let _res = queue.send(Message {
         command: "call_init".to_string(),
         sender: user.user_id,
-        recipient: incoming_message.recipient,
+        recipient: Some(incoming_message.recipient),
         description: None,
         index: None,
         candidate: None
@@ -138,7 +158,7 @@ fn sdp_offer(message: Json<SDPOfferIncomingMessage>, queue: &State<Sender<Messag
     let _res = queue.send(Message {
         command: "sdp_offer".to_string(),
         sender: user.user_id,
-        recipient: incoming_message.recipient,
+        recipient: Some(incoming_message.recipient),
         description: Some(incoming_message.description),
         index: None,
         candidate: None
@@ -151,7 +171,7 @@ fn sdp_answer(message: Json<SDPAnswerIncomingMessage>, queue: &State<Sender<Mess
     let _res = queue.send(Message {
         command: "sdp_answer".to_string(),
         sender: user.user_id,
-        recipient: incoming_message.recipient,
+        recipient: Some(incoming_message.recipient),
         description: Some(incoming_message.description),
         index: None,
         candidate: None
@@ -164,7 +184,7 @@ fn ice_candidate(message: Json<ICECandidateIncomingMessage>, queue: &State<Sende
     let _res = queue.send(Message {
         command: "ice_candidate".to_string(),
         sender: user.user_id,
-        recipient: incoming_message.recipient,
+        recipient: Some(incoming_message.recipient),
         description: None,
         index: Some(incoming_message.index),
         candidate: Some(incoming_message.candidate),
@@ -178,7 +198,7 @@ fn post(message: Json<IncomingMessage>, queue: &State<Sender<Message>>, user: Us
     let _res = queue.send(Message {
         command: incoming_message.command,
         sender: user_id,
-        recipient: incoming_message.recipient,
+        recipient: Some(incoming_message.recipient),
         description: incoming_message.description,
         index: incoming_message.index,
         candidate: incoming_message.candidate
@@ -215,7 +235,7 @@ impl<'r> FromRequest<'r> for User {
 fn rocket() -> _ {
     rocket::build()
         .manage(channel::<Message>(1024).0)
-        .mount("/", routes![camera_ping, call_init, sdp_offer, sdp_answer, ice_candidate, post, events])
+        .mount("/", routes![camera_discovery, camera_ping, call_init, sdp_offer, sdp_answer, ice_candidate, post, events])
         .mount("/", FileServer::from(relative!("static")).rank(1))
 }
 
