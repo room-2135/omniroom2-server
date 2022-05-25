@@ -1,7 +1,6 @@
 #[macro_use] extern crate rocket;
-
 use rocket::{State, Shutdown};
-use rocket::http::Cookie;
+use rocket::http::{Cookie, Status};
 use rocket::fs::{relative, FileServer};
 use rocket::response::stream::{EventStream, Event};
 use rocket::serde::{Serialize, Deserialize, json::Json, uuid::Uuid};
@@ -10,85 +9,53 @@ use rocket::tokio::select;
 
 use rocket::request::{FromRequest, Outcome, Request};
 
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
+enum Payload {
+    Welcome,
+    NewCamera,
+    CameraDiscovery,
+    CameraPing,
+    CallInit,
+    SDP {
+        description: String
+    },
+    ICE {
+        index: u32,
+        candidate: String
+    }
+}
+
 // Incoming Messages
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(crate = "rocket::serde")]
-struct GenericIncomingMessage {
-    pub recipient: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(crate = "rocket::serde")]
-struct CameraDiscoveryIncomingMessage {
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(crate = "rocket::serde")]
-struct CameraPingIncomingMessage {
-    pub recipient: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(crate = "rocket::serde")]
-struct SDPOfferIncomingMessage {
-    pub recipient: String,
-    pub description: String
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(crate = "rocket::serde")]
-pub struct SDPAnswerIncomingMessage {
-    pub recipient: String,
-    pub description: String
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(crate = "rocket::serde")]
-struct ICECandidateIncomingMessage {
-    pub recipient: String,
-    pub index: u32,
-    pub candidate: String
-}
-
-
-#[derive(Debug, Clone, FromForm, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(crate = "rocket::serde")]
 struct IncomingMessage {
-    #[field(validate = len(..20))]
-    pub command: String,
-    pub recipient: String,
-    pub description: Option<String>,
-    pub index: Option<u32>,
-    pub candidate: Option<String>,
+    pub recipient: Option<String>,
+    pub payload: Payload
 }
 
-#[derive(Debug, Clone, FromForm, Serialize, Deserialize)]
-#[serde(crate = "rocket::serde")]
+#[derive(Clone)]
 struct Message {
-    #[field(validate = len(..20))]
-    pub command: String,
     pub sender: String,
     pub recipient: Option<String>,
-    pub description: Option<String>,
-    pub index: Option<u32>,
-    pub candidate: Option<String>,
+    pub payload: Payload
 }
 
-#[derive(Debug, Clone, FromForm, Serialize, Deserialize)]
+#[derive(Clone, Serialize)]
 #[serde(crate = "rocket::serde")]
 struct OutgoingMessage {
-    #[field(validate = len(..20))]
-    pub command: String,
     pub sender: String,
-    pub description: Option<String>,
-    pub index: Option<u32>,
-    pub candidate: Option<String>,
+    pub payload: Payload
 }
 
 #[get("/events")]
 async fn events(queue: &State<Sender<Message>>, mut end: Shutdown, user: User) -> EventStream![] {
     let mut rx = queue.subscribe();
     EventStream! {
+        yield Event::json(&OutgoingMessage {
+            sender: "server".to_string(),
+            payload: Payload::Welcome
+        });
         loop {
             let msg = select! {
                 msg = rx.recv() => match msg {
@@ -99,110 +66,72 @@ async fn events(queue: &State<Sender<Message>>, mut end: Shutdown, user: User) -
                 _ = &mut end => break,
             };
 
-            let sender = Some(msg.sender.clone());
             let user_id = Some(user.user_id.clone());
-            if msg.recipient != sender && ((msg.recipient == user_id || msg.command == "camera_discovery") && msg.sender != user.user_id) {
+            if msg.recipient == user_id || ((msg.payload == Payload::CameraDiscovery || msg.payload == Payload::NewCamera ) && msg.sender != user.user_id) {
+                println!("Sending message from {:?} to {:?}", msg.sender, msg.recipient);
                 yield Event::json(&OutgoingMessage {
-                    command: msg.command,
                     sender: msg.sender,
-                    description: msg.description,
-                    index: msg.index,
-                    candidate: msg.candidate
+                    payload: msg.payload
                 });
             }
         }
     }
 }
 
-#[post("/message/camera_discovery")]
-fn camera_discovery(queue: &State<Sender<Message>>, user: User) {
-    let _res = queue.send(Message {
-        command: "camera_discovery".to_string(),
+fn queue_message(message: IncomingMessage, queue: &State<Sender<Message>>, user: User) -> Status {
+    match queue.send(Message {
         sender: user.user_id,
-        recipient: None,
-        description: None,
-        index: None,
-        candidate: None
-    });
-}
-
-#[post("/message/camera_ping", data = "<message>")]
-fn camera_ping(message: Json<CameraPingIncomingMessage>, queue: &State<Sender<Message>>, user: User) {
-    let incoming_message = message.into_inner();
-    let _res = queue.send(Message {
-        command: "camera_ping".to_string(),
-        sender: user.user_id,
-        recipient: Some(incoming_message.recipient),
-        description: None,
-        index: None,
-        candidate: None
-    });
-}
-
-#[post("/message/call_init", data = "<message>")]
-fn call_init(message: Json<GenericIncomingMessage>, queue: &State<Sender<Message>>, user: User) {
-    let incoming_message = message.into_inner();
-    let _res = queue.send(Message {
-        command: "call_init".to_string(),
-        sender: user.user_id,
-        recipient: Some(incoming_message.recipient),
-        description: None,
-        index: None,
-        candidate: None
-    });
-}
-
-#[post("/message/sdp_offer", data = "<message>")]
-fn sdp_offer(message: Json<SDPOfferIncomingMessage>, queue: &State<Sender<Message>>, user: User) {
-    let incoming_message = message.into_inner();
-    let _res = queue.send(Message {
-        command: "sdp_offer".to_string(),
-        sender: user.user_id,
-        recipient: Some(incoming_message.recipient),
-        description: Some(incoming_message.description),
-        index: None,
-        candidate: None
-    });
-}
-
-#[post("/message/sdp_answer", data = "<message>")]
-fn sdp_answer(message: Json<SDPAnswerIncomingMessage>, queue: &State<Sender<Message>>, user: User) {
-    let incoming_message = message.into_inner();
-    let _res = queue.send(Message {
-        command: "sdp_answer".to_string(),
-        sender: user.user_id,
-        recipient: Some(incoming_message.recipient),
-        description: Some(incoming_message.description),
-        index: None,
-        candidate: None
-    });
-}
-
-#[post("/message/ice_candidate", data = "<message>")]
-fn ice_candidate(message: Json<ICECandidateIncomingMessage>, queue: &State<Sender<Message>>, user: User) {
-    let incoming_message = message.into_inner();
-    let _res = queue.send(Message {
-        command: "ice_candidate".to_string(),
-        sender: user.user_id,
-        recipient: Some(incoming_message.recipient),
-        description: None,
-        index: Some(incoming_message.index),
-        candidate: Some(incoming_message.candidate),
-    });
+        recipient: message.recipient,
+        payload: message.payload
+    }) {
+        Ok(_) => Status::Ok,
+        Err(_) => Status::InternalServerError
+    }
 }
 
 #[post("/message", data = "<message>")]
-fn post(message: Json<IncomingMessage>, queue: &State<Sender<Message>>, user: User) {
-    let user_id = user.user_id;
-    let incoming_message = message.into_inner();
-    let _res = queue.send(Message {
-        command: incoming_message.command,
-        sender: user_id,
-        recipient: Some(incoming_message.recipient),
-        description: incoming_message.description,
-        index: incoming_message.index,
-        candidate: incoming_message.candidate
-    });
+fn message(message: Json<IncomingMessage>, queue: &State<Sender<Message>>, user: User) -> Status {
+    match message.payload {
+        Payload::Welcome => {
+            return Status::Ok;
+        }
+        Payload::NewCamera => {
+            if message.recipient != None {
+                return Status::BadRequest;
+            }
+        },
+        Payload::CameraDiscovery => {
+            if message.recipient != None {
+                return Status::BadRequest;
+            }
+        },
+        Payload::CameraPing => {
+            if message.recipient == None || message.recipient == Some(user.user_id.clone()) {
+                return Status::BadRequest;
+            }
+        },
+        Payload::CallInit => {
+            if message.recipient == None || message.recipient == Some(user.user_id.clone()) {
+                return Status::BadRequest;
+            }
+        },
+        Payload::SDP {..} => {
+            if message.recipient == None || message.recipient == Some(user.user_id.clone()) {
+                return Status::BadRequest;
+            }
+        },
+        Payload::ICE {..} => {
+            if message.recipient == None || message.recipient == Some(user.user_id.clone()) {
+                return Status::BadRequest;
+            }
+        },
+        //Useful in case of version mismatch between cameras, server and clients
+        #[allow(unreachable_patterns)]
+        _ => {
+            eprintln!("Error: server does not support this payload type: {:?}", message.payload);
+        }
+    }
+    queue_message(message.into_inner(), queue, user)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,7 +164,7 @@ impl<'r> FromRequest<'r> for User {
 fn rocket() -> _ {
     rocket::build()
         .manage(channel::<Message>(1024).0)
-        .mount("/", routes![camera_discovery, camera_ping, call_init, sdp_offer, sdp_answer, ice_candidate, post, events])
+        .mount("/", routes![events, message])
         .mount("/", FileServer::from(relative!("static")).rank(1))
 }
 

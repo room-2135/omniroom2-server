@@ -1,31 +1,48 @@
-function IncomingMessage(command, sender, description, ice_candidate_index, ice_candidate) {
-  this.command = command;
-  this.sender = sender;
-  this.description = description;
-  this.index = ice_candidate_index;
-  this.candidate = ice_candidate;
+class IncomingMessage {
+  constructor(sender, payload) {
+    this.sender = sender;
+    this.payload = payload;
+  }
 }
 
-function CameraDiscoveryOutgoingMessage() {
+class OutgoingMessage {
+  constructor(recipient, payload) {
+    this.recipient = recipient;
+    this.payload[payload.constructor.name] = payload;
+  }
 }
 
-function CallInitOutgoingMessage(recipient) {
-  this.recipient = recipient;
+class Welcome {
+  constructor(test) {
+    this.test = test;
+  }
 }
 
-function SDPAnswerOutgoingMessage(recipient, description) {
-  this.recipient = recipient;
-  this.description = description;
+class CameraDiscovery {
+  constructor() {
+  }
 }
 
-function ICECandidateOutgoingMessage(recipient, index, candidate) {
-  this.recipient = recipient;
-  this.index = index;
-  this.candidate = candidate;
+class CallInit {
+  constructor() {
+  }
 }
 
-function sendMessage(url_key, message) {
-  fetch("/message/" + url_key, {
+class SDP {
+  constructor(description) {
+    this.description = description;
+  }
+}
+
+class ICE {
+  constructor(index, candidate) {
+    this.index = index;
+    this.candidate = candidate;
+  }
+}
+
+function sendMessage(message) {
+  fetch("/message", {
     method: "POST",
     body: JSON.stringify(message),
   }).then((response) => {
@@ -34,28 +51,20 @@ function sendMessage(url_key, message) {
 }
 
 function sendCameraDiscovery(recipient) {
-  sendMessage("camera_discovery", new CameraDiscoveryOutgoingMessage());
+  sendMessage(new OutgoingMessage("", new CameraDiscovery()));
+  console.log(new OutgoingMessage("", new CameraDiscovery()));
 }
 
 function sendCallInit(recipient) {
-  sendMessage("call_init", new CallInitOutgoingMessage(
-    recipient
-  ));
+  sendMessage(new OutgoingMessage(recipient, new CameraDiscovery()));
 }
 
 function sendSDPAnswer(recipient, description) {
-  sendMessage("sdp_answer", new SDPAnswerOutgoingMessage(
-    recipient,
-    description
-  ));
+  sendMessage(new OutgoingMessage(recipient, new SDP(description)));
 }
 
 function sendICECandidate(recipient, index, candidate) {
-  sendMessage("ice_candidate", new ICECandidateOutgoingMessage(
-    recipient,
-    index,
-    candidate
-  ));
+  sendMessage(new OutgoingMessage(recipient, new ICE(index, candidate)));
 }
 
 function subscribe(uri, on_connected, on_camera_ping, on_sdp_offer, on_ice_candidate, on_error) {
@@ -71,6 +80,8 @@ function subscribe(uri, on_connected, on_camera_ping, on_sdp_offer, on_ice_candi
 
     events.addEventListener("message", (ev) => {
       const message = JSON.parse(ev.data);
+      console.log(message);
+      /*
       if (message.command == "camera_ping") {
         on_camera_ping(message);
       } else if (message.command == "sdp_offer") {
@@ -80,6 +91,7 @@ function subscribe(uri, on_connected, on_camera_ping, on_sdp_offer, on_ice_candi
       } else {
         console.log("Unknown command: ", message);
       }
+    */
     });
 
     events.addEventListener("error", () => {

@@ -8,8 +8,17 @@ let STATE = {
   connected: false,
 }
 
-let rtc_configuration = {iceServers: [
-                                      {urls: "stun:stun.l.google.com:19302"}]};
+let rtc_configuration = {
+  iceServers: [
+    {
+      urls: "stun:stun.l.google.com:19302"
+    },
+    {
+      urls: "turn:numb.viagenie.ca",
+      username: "muazkh",
+      credential: "webrtc@live.com"
+    }
+  ]};
 
 function addCamera(identifier) {
   let videoElement = getVideoElement(identifier);
@@ -91,4 +100,4 @@ function init() {
   });
 }
 
-init();
+//init();
