@@ -1,198 +1,121 @@
-#[macro_use]
-extern crate rocket;
-use rocket::fairing::{Fairing, Info, Kind};
-use rocket::fs::{relative, FileServer};
-use rocket::http::Header;
-use rocket::http::{Cookie, Status};
-use rocket::response::stream::{Event, EventStream};
-use rocket::serde::{json::Json, uuid::Uuid, Deserialize, Serialize};
-use rocket::tokio::select;
-use rocket::tokio::sync::broadcast::{channel, error::RecvError, Sender};
-use rocket::Response;
-use rocket::{Shutdown, State};
+use std::{io, sync::Arc};
 
-use rocket::request::{FromRequest, Outcome, Request};
+use actix_files as fs;
+use actix_session::Session;
+use actix_session::{storage::CookieSessionStore, SessionMiddleware};
+use actix_web::cookie::Key;
+use actix_web::{get, middleware::Logger, post, web, App, HttpResponse, HttpServer, Responder};
 
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
-#[serde(crate = "rocket::serde")]
-enum Payload {
-    Welcome,
-    NewCamera,
-    CameraDiscovery,
-    CameraPing,
-    CallInit,
-    SDP { description: String },
-    ICE { index: u32, candidate: String },
-}
+use uuid::Uuid;
 
-// Incoming Messages
-#[derive(Debug, Clone, Deserialize)]
-#[serde(crate = "rocket::serde")]
-struct IncomingMessage {
-    pub recipient: Option<String>,
-    pub payload: Payload,
-}
+mod broadcast;
+use broadcast::Broadcaster;
+use broadcast::{IncomingMessage, Message, Payload};
 
-#[derive(Clone, Debug)]
-struct Message {
-    pub sender: String,
-    pub recipient: Option<String>,
-    pub payload: Payload,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(crate = "rocket::serde")]
-struct OutgoingMessage {
-    pub sender: String,
-    pub payload: Payload,
+fn get_user_from_session(session: &Session) -> Uuid {
+    let existing_user: Option<Uuid> = session.get("user_id").unwrap();
+    dbg!(existing_user);
+    match existing_user {
+        Some(user_id) => user_id,
+        None => {
+            let user_id = Uuid::new_v4();
+            println!(
+                "======= generating new user_id: {} =======",
+                user_id.hyphenated().to_string()
+            );
+            session.insert("user_id", user_id).unwrap();
+            user_id
+        }
+    }
 }
 
 #[get("/events")]
-async fn events(queue: &State<Sender<Message>>, mut end: Shutdown, user: User) -> EventStream![] {
-    let mut rx = queue.subscribe();
-    EventStream! {
-        yield Event::json(&OutgoingMessage {
-            sender: "server".to_string(),
-            payload: Payload::Welcome
-        });
-        loop {
-            let msg = select! {
-                msg = rx.recv() => match msg {
-                    Ok(msg) => msg,
-                    Err(RecvError::Closed) => break,
-                    Err(RecvError::Lagged(_)) => continue,
-                },
-                _ = &mut end => break,
-            };
-
-            let user_id = Some(user.user_id.clone());
-            if msg.recipient == user_id || ((msg.payload == Payload::CameraDiscovery || msg.payload == Payload::NewCamera ) && msg.sender != user.user_id) {
-                println!("Sending message from {:?} to {:?}", msg.sender, msg.recipient);
-                yield Event::json(&OutgoingMessage {
-                    sender: msg.sender,
-                    payload: msg.payload
-                });
-            }
-        }
-    }
+async fn event_stream(broadcaster: web::Data<Broadcaster>, session: Session) -> impl Responder {
+    let user = get_user_from_session(&session);
+    broadcaster.new_client(user).await
 }
 
-fn queue_message(message: IncomingMessage, queue: &State<Sender<Message>>, user: User) -> Status {
-    match queue.send(Message {
-        sender: user.user_id,
-        recipient: message.recipient,
-        payload: message.payload,
-    }) {
-        Ok(_) => Status::Ok,
-        Err(err) => {
-            eprintln!("{:?}", err);
-            Status::InternalServerError
-        }
-    }
-}
+#[post("/message")]
+async fn message(broadcaster: web::Data<Broadcaster>, session: Session) -> impl Responder {
+    let user = get_user_from_session(&session);
 
-#[post("/message", data = "<message>")]
-fn message(message: Json<IncomingMessage>, queue: &State<Sender<Message>>, user: User) -> Status {
-    println!("New message: {:?}", message);
-    match message.payload {
-        Payload::Welcome => {
-            return Status::Ok;
-        }
-        Payload::NewCamera => {
-            if message.recipient != None {
-                return Status::BadRequest;
+    if let Some(message) = &session.get::<IncomingMessage>("body").unwrap() {
+        match message.payload {
+            Payload::Welcome => {
+                return HttpResponse::Ok().body("");
+            }
+            Payload::NewCamera => {
+                if message.recipient != None {
+                    return HttpResponse::BadRequest().body("");
+                }
+            }
+            Payload::CameraDiscovery => {
+                if message.recipient != None {
+                    return HttpResponse::BadRequest().body("");
+                }
+            }
+            Payload::CameraPing => {
+                if message.recipient == None || message.recipient == Some(user) {
+                    return HttpResponse::BadRequest().body("");
+                }
+            }
+            Payload::CallInit => {
+                if message.recipient == None || message.recipient == Some(user) {
+                    return HttpResponse::BadRequest().body("");
+                }
+            }
+            Payload::SDP { .. } => {
+                if message.recipient == None || message.recipient == Some(user) {
+                    return HttpResponse::BadRequest().body("");
+                }
+            }
+            Payload::ICE { .. } => {
+                if message.recipient == None || message.recipient == Some(user) {
+                    return HttpResponse::BadRequest().body("");
+                }
+            }
+            //Useful in case of version mismatch between cameras, server and clients
+            #[allow(unreachable_patterns)]
+            _ => {
+                eprintln!(
+                    "Error: server does not support this payload type: {:?}",
+                    message.payload
+                );
             }
         }
-        Payload::CameraDiscovery => {
-            if message.recipient != None {
-                return Status::BadRequest;
-            }
-        }
-        Payload::CameraPing => {
-            if message.recipient == None || message.recipient == Some(user.user_id.clone()) {
-                return Status::BadRequest;
-            }
-        }
-        Payload::CallInit => {
-            if message.recipient == None || message.recipient == Some(user.user_id.clone()) {
-                return Status::BadRequest;
-            }
-        }
-        Payload::SDP { .. } => {
-            if message.recipient == None || message.recipient == Some(user.user_id.clone()) {
-                return Status::BadRequest;
-            }
-        }
-        Payload::ICE { .. } => {
-            if message.recipient == None || message.recipient == Some(user.user_id.clone()) {
-                return Status::BadRequest;
-            }
-        }
-        //Useful in case of version mismatch between cameras, server and clients
-        #[allow(unreachable_patterns)]
-        _ => {
-            eprintln!(
-                "Error: server does not support this payload type: {:?}",
-                message.payload
-            );
-        }
-    }
-    queue_message(message.into_inner(), queue, user)
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(crate = "rocket::serde")]
-struct User {
-    user_id: String,
-}
-
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for User {
-    type Error = ();
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, ()> {
-        let user_id: String = match request.cookies().get_private("user_id") {
-            Some(c) => String::from(c.value()),
-            None => {
-                let new_user_id = Uuid::new_v4().to_hyphenated().to_string();
-                let res = new_user_id.clone();
-                request
-                    .cookies()
-                    .add_private(Cookie::new("user_id", new_user_id));
-                println!("======= generating new user_id: {} =======", res);
-                res
-            }
-        };
-        rocket::request::Outcome::Success(User { user_id })
-    }
-}
-
-#[launch]
-fn rocket() -> _ {
-    rocket::build()
-        .attach(CORS)
-        .manage(channel::<Message>(1024).0)
-        .mount("/", routes![events, message])
-        .mount("/", FileServer::from(relative!("static")).rank(1))
-}
-
-pub struct CORS;
-
-#[rocket::async_trait]
-impl Fairing for CORS {
-    fn info(&self) -> Info {
-        Info {
-            name: "Add CORS headers to responses",
-            kind: Kind::Response,
-        }
+        broadcaster
+            .send(Message {
+                sender: user,
+                recipient: message.recipient,
+                payload: message.payload.clone(),
+            })
+            .await;
     }
 
-    async fn on_response<'r>(&self, _request: &'r Request<'_>, response: &mut Response<'r>) {
-        response.set_header(Header::new("Access-Control-Allow-Origin", "*"));
-        response.set_header(Header::new(
-            "Access-Control-Allow-Methods",
-            "POST, GET, PATCH, OPTIONS",
-        ));
-        response.set_header(Header::new("Access-Control-Allow-Headers", "*"));
-        response.set_header(Header::new("Access-Control-Allow-Credentials", "true"));
-    }
+    HttpResponse::Ok().body("msg sent")
+}
+
+#[actix_web::main]
+async fn main() -> io::Result<()> {
+    let data = Broadcaster::create();
+
+    let secret_key: Key = Key::generate();
+
+    HttpServer::new(move || {
+        App::new()
+            .app_data(web::Data::from(Arc::clone(&data)))
+            .service(event_stream)
+            .service(message)
+            .service(fs::Files::new("/static", "./static").show_files_listing())
+            .wrap(Logger::default())
+            .wrap(SessionMiddleware::new(
+                CookieSessionStore::default(),
+                secret_key.clone(),
+            ))
+    })
+    .bind(("0.0.0.0", 8000))?
+    .workers(2)
+    .run()
+    .await
 }
